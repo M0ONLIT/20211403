@@ -50,17 +50,21 @@ class StockfishWorker(QThread):
             
             # 최대 20초간 분석 수행 (주기적으로 정보를 업데이트)
             with engine.analysis(board, chess.engine.Limit(time=20.0)) as analysis:
-                for info in analysis:
-                    if not self._is_running: break
-                    
-                    score = info.get("score")
-                    pv = info.get("pv")
-                    
-                    if score and pv:
-                        score_str = str(score.relative.score(mate_score=10000) / 100.0)
-                        line_str = board.variation_san(pv[:5]) # 앞 5수만 표시
-                        self.eval_ready.emit(score_str, line_str)
-            
+                # run 메서드 내부 수정 예시
+                    for info in analysis:
+                        if not self._is_running: break
+                        
+                        score = info.get("score")
+                        pv = info.get("pv")
+                        depth = info.get("depth", 0) # 현재 탐색 깊이 가져오기
+                        
+                        if score and pv:
+                            # 조건: 깊이가 어느 정도(예: 10) 확보되었거나, 수순이 5수 이상일 때만 업데이트
+                            if len(pv) >= 5:
+                                score_str = str(score.relative.score(mate_score=10000) / 100.0)
+                                # variation_san은 pv가 5개보다 적어도 에러 없이 있는 만큼만 반환합니다.
+                                line_str = board.variation_san(pv[:5]) 
+                                self.eval_ready.emit(score_str, line_str)
             engine.quit()
         except Exception as e:
             print(f"Engine Error: {e}")
@@ -80,6 +84,11 @@ class LLMWorker(QThread):
         self.score = score
         # LM Studio 기본 API 엔드포인트
         self.api_url = "http://127.0.0.1:1234/v1/chat/completions"
+        self._is_running = True # 실행 상태 플래그
+
+    def stop(self):
+        """외부에서 스레드를 안전하게 멈추기 위한 함수"""
+        self._is_running = False
     
     def run(self):
         # [프롬프트 엔지니어링] 체스 그랜드마스터 페르소나와 전략적 가이드라인 부여
@@ -88,7 +97,7 @@ class LLMWorker(QThread):
             "엔진의 수치 데이터를 기반으로 인간이 이해할 수 있는 전략적 통찰을 제공하세요. "
             "반드시 한국어로 답변하고, '폰 구조', '중앙 장악력', '기물 활동성' 등의 전문 용어를 활용하세요."
             "마크다운 형식은 쓰지 마세요."
-            "300자 정도로 간단히 설명하세요."
+            "500자 정도로 간단히 설명하세요."
         )
         
         user_content = (
@@ -117,9 +126,10 @@ class LLMWorker(QThread):
                 stream=True, 
                 timeout=60 
             )
-
             # 서버로부터 오는 조각들을 한 줄씩 읽습니다.
             for line in response.iter_lines():
+                if not self._is_running:
+                    break
                 if line:
                     # 'data: ' 접두사 제거 후 JSON 파싱
                     decoded_line = line.decode('utf-8')
@@ -132,7 +142,6 @@ class LLMWorker(QThread):
                         
                         if content:
                             self.chunk_ready.emit(content) # UI로 한 조각 전달
-                            print(content)
 
         except Exception as e:
             self.chunk_ready.emit(f"\n[에러 발생: {str(e)}]")
@@ -216,9 +225,11 @@ class ChessAnalysisUI(QMainWindow):
         self.llm_output.setReadOnly(True)
         self.llm_output.setStyleSheet("font-family: 'Malgun Gothic'; padding: 10px;")
 
-        right_panel.addWidget(QLabel("📊 Stockfish Evaluation"))
+        eval_label = QLabel("📊 Stockfish Evaluation"); eval_label.setFixedHeight(30)
+        right_panel.addWidget(eval_label)
         right_panel.addWidget(self.engine_output)
-        right_panel.addWidget(QLabel("🧠 Strategic Interpretation"))
+        eval_label = QLabel("🧠 Strategic Interpretation"); eval_label.setFixedHeight(30)
+        right_panel.addWidget(eval_label)
         right_panel.addWidget(self.llm_output)
 
         main_layout.addWidget(self.move_list)
@@ -272,8 +283,8 @@ class ChessAnalysisUI(QMainWindow):
         # 2. UI 초기화
         self.engine_output.clear()
         self.llm_output.clear()
-        self.engine_output.append("🔍 엔진이 수 읽기를 시작합니다 (3초 후 AI 분석 시작)...")
-        self.llm_output.setPlaceholderText("3초 후 AI 코치의 분석이 시작됩니다.")
+        self.engine_output.append("🔍 엔진이 수 읽기를 시작합니다...")
+        self.llm_output.setPlaceholderText("AI 코치의 분석이 진행 중입니다.")
 
         # 3. 스톡피시 실행
         self.sf_worker = StockfishWorker(board.fen(), self.stockfish_path)
@@ -295,15 +306,27 @@ class ChessAnalysisUI(QMainWindow):
     def request_llm_explanation(self):
         """타이머 종료 후 또는 새로고침 시 LLM에 분석 요청"""
         if not self.ai_generated_for_pos:
+            # 1. 기존 워커가 있다면 처리
+            if self.llm_worker and self.llm_worker.isRunning():
+                # ⚡ 중요: UI와 연결된 시그널을 즉시 끊어서 섞임 방지
+                try:
+                    self.llm_worker.chunk_ready.disconnect()
+                except TypeError:
+                    pass # 이미 끊겨있는 경우 무시
+                
+                self.llm_worker.stop() # 내부 루프 중단 지시
+                self.llm_worker.wait() # 스레드가 완전히 죽을 때까지 잠시 대기
+
             self.llm_output.clear()
             self.llm_output.append("🤖 AI 코치가 전략을 구성 중입니다...\n")
             
-            # 스트리밍 워커 실행
+            # 2. 새 워커 생성 및 연결
             self.llm_worker = LLMWorker(self.last_line, self.last_score)
             self.llm_worker.chunk_ready.connect(self.append_llm_text)
             self.llm_worker.start()
             
-            self.ai_generated_for_pos = True # 자동 생성 방지 플래그 설정
+            self.ai_generated_for_pos = True
+            self.llm_output.clear()
 
     def manual_refresh_ai(self):
         """새로고침 버튼 클릭 시 강제로 다시 분석"""
