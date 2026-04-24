@@ -1,4 +1,3 @@
----
 
 # ♟️ AI Strategic Chess Coach
 > [cite_start]**"스톡피시의 수치적 언어를 인간의 전략적 통찰로 번역합니다."** [cite: 49]
