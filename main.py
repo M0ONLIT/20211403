@@ -14,7 +14,6 @@ from PyQt6.QtWidgets import (QApplication, QMainWindow, QWidget, QHBoxLayout,
 from PyQt6.QtSvgWidgets import QSvgWidget
 from PyQt6.QtCore import Qt, QThread, pyqtSignal, QTimer
 
-# [도구] 실행 경로 최적화 (어디서 실행해도 파일을 찾을 수 있게 함)
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
 def wait(seconds=1.0):
@@ -105,15 +104,18 @@ class LLMWorker(QThread):
         for i, data in enumerate(self.top_lines):
             lines_text += f"후보 {i+1}: {data['line']} (평가점수: {data['score']:+.2f})\n"
 
+        board = chess.Board(self.fen)
+        ascii_board = board.unicode(borders=True)
+
         system_content = (
             "당신은 전 세계 최고의 체스 전략가이자 코치입니다. "
             "제공되는 FEN(보드 상태)과 스톡피시의 상위 3개 추천 수순을 바탕으로 현재 국면을 깊이 있게 분석하세요. "
             "반드시 한국어로 답변하고, 전문 용어(중앙 통제, 기물 활동성 등)를 사용하세요. "
-            "마크다운은 절대 사용하지 말고, 평어체(~입니다)로 500자 내외로 설명하세요."
+            "마크다운은 절대 사용하지 말고, 평어체로 500자 내외로 설명하세요."
         )
         
         user_content = (
-            f"현재 보드 상태(FEN): {self.fen}\n\n"
+            f"현재 보드 상태: {ascii_board}\n\n"
             f"스톡피시 추천 수순:\n{lines_text}\n"
             "이 상황에서 가장 전략적인 선택은 무엇이며, 백과 흑 중 누가 유리한지 그 이유를 설명해 주세요."
         )
